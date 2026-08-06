@@ -34,6 +34,7 @@
 #include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/tab_container.hpp>
 #include <godot_cpp/classes/texture_button.hpp>
+#include <godot_cpp/classes/timer.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/accept_dialog.hpp>
 
@@ -77,6 +78,7 @@ private:
 	Ref<InventoryDatabase> database;
 	String database_path;
 	bool autosave_enabled;
+	Timer *autosave_timer;
 
 	// UI Components
 	VBoxContainer *main_vbox;
@@ -131,6 +133,7 @@ private:
 	void _save_file_as(const String &p_path);
 	void _import_inv_file(const String &p_path);
 	void _on_data_changed();
+	void _on_autosave_timer_timeout();
 
 	void _on_database_new_button_pressed();
 	void _on_database_open_menu_pressed();

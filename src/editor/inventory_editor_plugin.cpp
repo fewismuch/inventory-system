@@ -33,6 +33,8 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/v_separator.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/timer.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
 
@@ -93,6 +95,7 @@ void InventoryEditor::_notification(int p_what) {
 InventoryEditor::InventoryEditor() {
 	editor_plugin = nullptr;
 	autosave_enabled = true; // Autosave is enabled by default
+	autosave_timer = nullptr;
 	
 	// Initialize tab button pointers
 	item_definitions_tab_button = nullptr;
@@ -116,6 +119,13 @@ void InventoryEditor::set_editor_plugin(EditorPlugin *p_plugin) {
 void InventoryEditor::edit_database(const Ref<InventoryDatabase> &p_database, const String &p_path) {
 	database = p_database;
 	database_path = p_path;
+	// When the database is opened via _edit() (e.g. double-clicked in the
+	// FileSystem dock), no path is passed in. Derive it from the resource so
+	// that Save / autosave actually write back to the source file. Without
+	// this, database_path stays empty and _save_file() bails out silently.
+	if (database_path.is_empty() && database.is_valid()) {
+		database_path = database->get_path();
+	}
 	_load_database(database);
 }
 
@@ -413,6 +423,15 @@ void InventoryEditor::_create_ui() {
 	save_as_dialog->add_filter("*.tres", "Godot Resource");
 	save_as_dialog->connect("file_selected", callable_mp(this, &InventoryEditor::_on_save_as_dialog_file_selected));
 
+	// Autosave debounce timer. Each data change restarts it, so a burst of
+	// edits (e.g. typing in a text field) collapses into a single save once
+	// the user stops editing, instead of saving on every keystroke.
+	autosave_timer = memnew(Timer);
+	add_child(autosave_timer);
+	autosave_timer->set_wait_time(0.5);
+	autosave_timer->set_one_shot(true);
+	autosave_timer->connect("timeout", callable_mp(this, &InventoryEditor::_on_autosave_timer_timeout));
+
 	// Dialog sizes
 	float scale = EditorInterface::get_singleton()->get_editor_scale();
 	Vector2i min_size = Vector2i(600, 500) * scale;
@@ -631,10 +650,13 @@ void InventoryEditor::_save_file() {
 	if (database.is_null() || database_path.is_empty()) {
 		return;
 	}
-	
-	ResourceSaver::get_singleton()->save(database, database_path);
-	if (editor_plugin) {
-		editor_plugin->get_editor_interface()->get_resource_filesystem()->scan();
+
+	Error err = ResourceSaver::get_singleton()->save(database, database_path);
+	if (err != OK) {
+		// Saving can fail when the file is busy (e.g. an in-flight filesystem
+		// scan/reimport) or the resource is in a bad state. Surface it instead
+		// of failing silently.
+		UtilityFunctions::push_error("Failed to save inventory database to: " + database_path);
 	}
 }
 
@@ -642,11 +664,11 @@ void InventoryEditor::_save_file_as(const String &p_path) {
 	if (database.is_null()) {
 		return;
 	}
-	
+
 	database_path = p_path;
-	ResourceSaver::get_singleton()->save(database, database_path);
-	if (editor_plugin) {
-		editor_plugin->get_editor_interface()->get_resource_filesystem()->scan();
+	Error err = ResourceSaver::get_singleton()->save(database, database_path);
+	if (err != OK) {
+		UtilityFunctions::push_error("Failed to save inventory database to: " + database_path);
 	}
 	title_label->set_text(p_path);
 }
@@ -1044,10 +1066,20 @@ void InventoryEditor::_on_loots_tab_pressed() {
 }
 
 void InventoryEditor::_on_data_changed() {
-	// Auto-save immediately when data changes if autosave is enabled
+	// Debounce auto-save: restart the timer so a burst of edits (e.g. typing)
+	// only triggers a single save once the user stops editing, instead of
+	// saving + scanning on every keystroke.
 	if (autosave_enabled && !database.is_null() && !database_path.is_empty()) {
-		_save_file();
+		if (autosave_timer) {
+			autosave_timer->start();
+		} else {
+			_save_file();
+		}
 	}
+}
+
+void InventoryEditor::_on_autosave_timer_timeout() {
+	_save_file();
 }
 
 // InventoryEditorPlugin
