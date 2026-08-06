@@ -107,6 +107,9 @@ void ItemDefinitionEditor::_create_ui() {
 	VBoxContainer* left_vbox = memnew(VBoxContainer);
 	top_hbox->add_child(left_vbox);
 	left_vbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	// Keep the ID/Name inputs at their own height when the icon editor on the
+	// right expands, otherwise the HBox stretches them to fill the extra space.
+	left_vbox->set_v_size_flags(Control::SIZE_SHRINK_BEGIN);
 
 	// ResourceIDEditor - matches addon structure
 	resource_id_editor = memnew(ResourceIDEditor);
@@ -142,7 +145,7 @@ void ItemDefinitionEditor::_create_ui() {
 	// Right side: Icon selector
 	icon_selector = memnew(IconSelector);
 	top_hbox->add_child(icon_selector);
-	icon_selector->set_custom_minimum_size(Vector2(288, 31));
+	icon_selector->set_custom_minimum_size(Vector2(700, 31));
 
 	// Description section
 	HBoxContainer* desc_hbox = memnew(HBoxContainer);
