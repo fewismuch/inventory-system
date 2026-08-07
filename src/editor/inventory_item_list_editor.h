@@ -16,6 +16,7 @@
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/item_list.hpp>
 #include <godot_cpp/classes/line_edit.hpp>
+#include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/classes/texture_rect.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/variant/array.hpp>
@@ -31,11 +32,13 @@ private:
 	Array item_list_handler; // Filtered items for display
 	Dictionary item_map; // Map of item id -> item object
 	String filter;
+	String category_filter; // Selected category id ("" = all); only used when a category dropdown is populated
 
 	// UI Components
 	Control *search_items;
 	LineEdit *search_line_edit;
 	TextureRect *search_icon;
+	OptionButton *category_filter_button;
 	ItemList *item_list;
 
 	void _create_ui();
@@ -45,6 +48,7 @@ private:
 	void _apply_filter();
 
 	void _on_search_text_changed(const String &p_text);
+	void _on_category_filter_selected(int p_index);
 	void _on_item_list_item_selected(int p_index);
 	void _on_item_list_item_clicked(int p_index, const Vector2 &p_at_position, int p_button_index);
 
@@ -57,6 +61,10 @@ public:
 	Array get_items() const { return items; }
 	void set_filter(const String &p_filter);
 	String get_filter() const { return filter; }
+
+	// Populate the optional category dropdown shown below the search bar.
+	// Only editors that call this (e.g. ItemDefinitionsEditor) show the filter.
+	void set_categories(const Array &p_categories);
 
 	void load_items(const Array &p_items);
 	void add_item(const Variant &p_item);

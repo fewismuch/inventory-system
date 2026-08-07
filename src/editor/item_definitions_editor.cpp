@@ -61,7 +61,7 @@ void ItemDefinitionsEditor::_create_ui() {
 	hsplit_container->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	hsplit_container->set_offset(SIDE_LEFT, -4);
 	hsplit_container->set_offset(SIDE_RIGHT, 4);
-	hsplit_container->set_split_offset(-128); // Match addon split offset
+	hsplit_container->set_split_offset(-128); // Center the split by default
 
 	// InventoryItemListEditor (left side)
 	inventory_item_list_editor = memnew(InventoryItemListEditor);
@@ -98,6 +98,11 @@ void ItemDefinitionsEditor::on_load_database() {
 		item_editor->load_item(Ref<ItemDefinition>(), get_database());
 	}
 	load_items();
+	// Populate the category filter dropdown below the search bar from the
+	// database's item categories.
+	if (inventory_item_list_editor && get_database()) {
+		inventory_item_list_editor->set_categories(get_database()->get_item_categories());
+	}
 }
 
 void ItemDefinitionsEditor::load_items() {

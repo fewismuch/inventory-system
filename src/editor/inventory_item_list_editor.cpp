@@ -24,8 +24,10 @@ void InventoryItemListEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_items"), &InventoryItemListEditor::get_items);
 	ClassDB::bind_method(D_METHOD("set_filter", "filter"), &InventoryItemListEditor::set_filter);
 	ClassDB::bind_method(D_METHOD("get_filter"), &InventoryItemListEditor::get_filter);
-	
+	ClassDB::bind_method(D_METHOD("set_categories", "categories"), &InventoryItemListEditor::set_categories);
+
 	ClassDB::bind_method(D_METHOD("_on_search_text_changed", "text"), &InventoryItemListEditor::_on_search_text_changed);
+	ClassDB::bind_method(D_METHOD("_on_category_filter_selected", "index"), &InventoryItemListEditor::_on_category_filter_selected);
 	ClassDB::bind_method(D_METHOD("_on_item_list_item_selected", "index"), &InventoryItemListEditor::_on_item_list_item_selected);
 	ClassDB::bind_method(D_METHOD("_on_item_list_item_clicked", "index", "at_position", "button_index"), &InventoryItemListEditor::_on_item_list_item_clicked);
 
@@ -45,6 +47,8 @@ void InventoryItemListEditor::_notification(int p_what) {
 }
 
 InventoryItemListEditor::InventoryItemListEditor() {
+	category_filter_button = nullptr;
+
 	set_custom_minimum_size(Vector2(256, 0));
 }
 
@@ -55,8 +59,10 @@ void InventoryItemListEditor::_create_ui() {
 	// Search container
 	search_items = memnew(Control);
 	add_child(search_items);
-	search_items->set_custom_minimum_size(Vector2(0, 32));
+	search_items->set_custom_minimum_size(Vector2(0, 46));
 	search_items->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	// 添加下边距
+	search_items->set_offset(Side::SIDE_BOTTOM, 8);
 
 	// Search line edit
 	search_line_edit = memnew(LineEdit);
@@ -69,15 +75,32 @@ void InventoryItemListEditor::_create_ui() {
 	// Search icon
 	search_icon = memnew(TextureRect);
 	search_items->add_child(search_icon);
-	search_icon->set_custom_minimum_size(Vector2(16, 16));
+	search_icon->set_custom_minimum_size(Vector2(24, 24));
 	search_icon->set_anchors_preset(Control::PRESET_CENTER_RIGHT);
-	search_icon->set_offset(Side::SIDE_LEFT, -24);
-	search_icon->set_offset(Side::SIDE_TOP, -8);
-	search_icon->set_offset(Side::SIDE_RIGHT, -8);
+	search_icon->set_offset(Side::SIDE_LEFT, -48);
+	search_icon->set_offset(Side::SIDE_TOP, -2);
+	//search_icon->set_offset(Side::SIDE_RIGHT, 8);
 	search_icon->set_offset(Side::SIDE_BOTTOM, 8);
 	search_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 	search_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 	search_icon->set_texture(get_theme_icon("Search", "EditorIcons"));
+
+	// Bottom margin spacer (set_offset doesn't work under a VBox; use a spacer)
+	Control *search_bottom_spacer = memnew(Control);
+	add_child(search_bottom_spacer);
+	search_bottom_spacer->set_custom_minimum_size(Vector2(0, 8));
+	search_bottom_spacer->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+
+
+	// Optional category filter dropdown (hidden until set_categories() is called)
+	category_filter_button = memnew(OptionButton);
+	add_child(category_filter_button);
+	category_filter_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	category_filter_button->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	category_filter_button->set_custom_minimum_size(Vector2(0, 32));
+	category_filter_button->set_visible(false);
+	category_filter_button->set_tooltip_text("Filter by category");
+	category_filter_button->connect("item_selected", callable_mp(this, &InventoryItemListEditor::_on_category_filter_selected));
 
 	// Item list
 	item_list = memnew(ItemList);
@@ -219,6 +242,27 @@ void InventoryItemListEditor::_apply_filter() {
 		Object *obj = items[i];
 		if (!obj) continue;
 		
+		// Optional category dropdown gate: when a category is selected, the item
+		// must be an ItemDefinition that owns a category with that id.
+		if (!category_filter.is_empty()) {
+			ItemDefinition *item_def = Object::cast_to<ItemDefinition>(obj);
+			if (!item_def) {
+				continue;
+			}
+			bool cat_match = false;
+			TypedArray<ItemCategory> categories = item_def->get_categories();
+			for (int j = 0; j < categories.size(); j++) {
+				ItemCategory *category = Object::cast_to<ItemCategory>(categories[j]);
+				if (category && category->get_id() == category_filter) {
+					cat_match = true;
+					break;
+				}
+			}
+			if (!cat_match) {
+				continue;
+			}
+		}
+		
 		String name;
 		if (obj->get("name").get_type() == Variant::STRING) {
 			name = obj->get("name");
@@ -264,6 +308,53 @@ void InventoryItemListEditor::_emit_item_popup_menu_requested(const Vector2 &p_p
 
 void InventoryItemListEditor::_on_search_text_changed(const String &p_text) {
 	set_filter(p_text);
+}
+
+void InventoryItemListEditor::set_categories(const Array &p_categories) {
+	if (!category_filter_button) {
+		return;
+	}
+
+	// Remember the currently selected category id so we can preserve the
+	// selection across repopulation (e.g. when the database reloads).
+	String previous_selection = category_filter;
+
+	category_filter_button->clear();
+	// Index 0: show all categories.
+	category_filter_button->add_item("All Categories");
+	category_filter_button->set_item_metadata(0, String(""));
+
+	int select_index = 0;
+	for (int i = 0; i < p_categories.size(); i++) {
+		ItemCategory *category = Object::cast_to<ItemCategory>(p_categories[i]);
+		if (!category) {
+			continue;
+		}
+		int idx = category_filter_button->get_item_count();
+		String label = category->get_name();
+		if (label.is_empty()) {
+			label = category->get_id();
+		}
+		category_filter_button->add_item(label);
+		category_filter_button->set_item_metadata(idx, category->get_id());
+
+		if (category->get_id() == previous_selection) {
+			select_index = idx;
+		}
+	}
+
+	category_filter_button->select(select_index);
+	category_filter = category_filter_button->get_item_metadata(select_index).operator String();
+	category_filter_button->set_visible(true);
+	_apply_filter();
+}
+
+void InventoryItemListEditor::_on_category_filter_selected(int p_index) {
+	if (!category_filter_button) {
+		return;
+	}
+	category_filter = category_filter_button->get_item_metadata(p_index).operator String();
+	_apply_filter();
 }
 
 void InventoryItemListEditor::_on_item_list_item_selected(int p_index) {

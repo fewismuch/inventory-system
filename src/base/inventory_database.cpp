@@ -327,6 +327,7 @@ Dictionary InventoryDatabase::serialize_item_definition(const Ref<ItemDefinition
 	data["can_stack"] = definition->get_can_stack();
 	data["max_stack"] = definition->get_max_stack();
 	data["name"] = definition->get_name();
+	data["description"] = definition->get_description();
 	if (definition->get_icon() != nullptr) {
 		data["icon"] = definition->get_icon()->get_path();
 	}
@@ -361,6 +362,9 @@ void InventoryDatabase::deserialize_item_definition(Ref<ItemDefinition> definiti
 	}
 	if (data.has("name")) {
 		definition->set_name(data["name"]);
+	}
+	if (data.has("description")) {
+		definition->set_description(data["description"]);
 	}
 	if (data.has("icon")) {
 		Ref<Texture2D> icon = ResourceLoader::get_singleton()->load(data["icon"]);

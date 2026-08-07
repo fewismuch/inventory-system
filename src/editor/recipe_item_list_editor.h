@@ -64,7 +64,14 @@ public:
 	void update_recipe();
 	void select();
 	void unselect();
-	
+
+	// Report the content's natural size so the control grows to fit the panel
+	// background + VBox content. Without this the anchored panel chain does not
+	// propagate its minimum size, the control stays at the hardcoded height, the
+	// panel (clickable area) covers only part of the drawn content and adjacent
+	// list items overlap.
+	virtual Vector2 _get_minimum_size() const override;
+
 	RecipeItemListEditor();
 	~RecipeItemListEditor();
 };

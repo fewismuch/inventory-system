@@ -55,7 +55,7 @@ void RecipesListEditor::_create_ui() {
 	// Search container
 	search_container = memnew(Control);
 	add_child(search_container);
-	search_container->set_custom_minimum_size(Vector2(0, 32));
+	search_container->set_custom_minimum_size(Vector2(0, 46));
 	search_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 
 	// Search line edit
@@ -69,15 +69,22 @@ void RecipesListEditor::_create_ui() {
 	// Search icon
 	search_icon = memnew(TextureRect);
 	search_container->add_child(search_icon);
-	search_icon->set_custom_minimum_size(Vector2(16, 16));
+	search_icon->set_custom_minimum_size(Vector2(24, 24));
 	search_icon->set_anchors_preset(Control::PRESET_CENTER_RIGHT);
-	search_icon->set_offset(Side::SIDE_LEFT, -24);
-	search_icon->set_offset(Side::SIDE_TOP, -8);
-	search_icon->set_offset(Side::SIDE_RIGHT, -8);
+	search_icon->set_offset(Side::SIDE_LEFT, -48);
+	search_icon->set_offset(Side::SIDE_TOP, -2);
+	//search_icon->set_offset(Side::SIDE_RIGHT, 8);
 	search_icon->set_offset(Side::SIDE_BOTTOM, 8);
 	search_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 	search_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 	search_icon->set_texture(get_theme_icon("Search", "EditorIcons"));
+
+	// Bottom margin spacer (set_offset doesn't work under a VBox; use a spacer)
+	Control *search_bottom_spacer = memnew(Control);
+	add_child(search_bottom_spacer);
+	search_bottom_spacer->set_custom_minimum_size(Vector2(0, 8));
+	search_bottom_spacer->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+
 
 	// Scroll container
 	scroll_container = memnew(ScrollContainer);

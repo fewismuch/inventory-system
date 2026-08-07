@@ -44,12 +44,26 @@ void RecipeItemListEditor::_notification(int p_what) {
 
 RecipeItemListEditor::RecipeItemListEditor() {
 	database = nullptr;
-	
-	set_custom_minimum_size(Vector2(320, 108));
+
+	// Only enforce a width floor; height is driven by _get_minimum_size() so the
+	// panel/clickable area always matches the rendered content height.
+	set_custom_minimum_size(Vector2(320, 0));
 	set_anchors_and_offsets_preset(Control::PRESET_TOP_LEFT);
 }
 
 RecipeItemListEditor::~RecipeItemListEditor() {
+}
+
+Vector2 RecipeItemListEditor::_get_minimum_size() const {
+	// The content lives under margin_container (panel -> margin_container ->
+	// main_container VBox), all anchored FULL_RECT, so its minimum size does not
+	// propagate to this Control automatically. Report it here so the layout
+	// sizes this row to fit its content, keeping the clickable panel in sync
+	// with the drawn area and preventing overlap with the next list item.
+	if (margin_container) {
+		return margin_container->get_combined_minimum_size();
+	}
+	return Vector2();
 }
 
 void RecipeItemListEditor::_create_ui() {
@@ -64,13 +78,15 @@ void RecipeItemListEditor::_create_ui() {
 	panel->add_child(margin_container);
 	margin_container->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	margin_container->add_theme_constant_override("margin_left", 4);
-	margin_container->add_theme_constant_override("margin_top", 2);
+	margin_container->add_theme_constant_override("margin_top", 0);
 	margin_container->add_theme_constant_override("margin_right", 4);
-	margin_container->add_theme_constant_override("margin_bottom", 2);
+	margin_container->add_theme_constant_override("margin_bottom", 0);
 	
 	// Main VBox container
 	main_container = memnew(VBoxContainer);
 	margin_container->add_child(main_container);
+	// Tighten the gap between Products / Ingredients / Extra Req. Items rows.
+	main_container->add_theme_constant_override("separation", 0);
 	
 	// Top spacer (matching GDScript)
 	Control *top_spacer = memnew(Control);
@@ -85,6 +101,8 @@ void RecipeItemListEditor::_create_ui() {
 	products_section->add_child(products_label);
 	products_label->set_custom_minimum_size(Vector2(128, 0));
 	products_label->set_text("Products");
+	products_label->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	products_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
 	
 	products_list = memnew(HBoxContainer);
 	products_section->add_child(products_list);
@@ -93,18 +111,19 @@ void RecipeItemListEditor::_create_ui() {
 	// More info section (craft station icon and delete button)
 	HBoxContainer *more_infos = memnew(HBoxContainer);
 	products_section->add_child(more_infos);
-	more_infos->set_custom_minimum_size(Vector2(0, 32));
+	more_infos->set_custom_minimum_size(Vector2(0, 16));
+	more_infos->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	more_infos->add_theme_constant_override("separation", 0);
-	
+
 	craft_station_icon = memnew(TextureRect);
 	more_infos->add_child(craft_station_icon);
-	craft_station_icon->set_custom_minimum_size(Vector2(24, 24));
+	craft_station_icon->set_custom_minimum_size(Vector2(20, 20));
 	craft_station_icon->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	craft_station_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
-	
+
 	delete_button = memnew(Button);
 	more_infos->add_child(delete_button);
-	delete_button->set_custom_minimum_size(Vector2(24, 24));
+	delete_button->set_custom_minimum_size(Vector2(20, 20));
 	delete_button->set_flat(true);
 	delete_button->set_tooltip_text("Delete");
 	delete_button->connect("pressed", callable_mp(this, &RecipeItemListEditor::_on_delete_button_pressed));
@@ -117,6 +136,8 @@ void RecipeItemListEditor::_create_ui() {
 	ingredients_section->add_child(ingredients_label);
 	ingredients_label->set_custom_minimum_size(Vector2(128, 0));
 	ingredients_label->set_text("Ingredients");
+	ingredients_label->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	ingredients_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
 	
 	ingredients_list = memnew(HBoxContainer);
 	ingredients_section->add_child(ingredients_list);
@@ -130,6 +151,8 @@ void RecipeItemListEditor::_create_ui() {
 	required_section->add_child(required_label);
 	required_label->set_custom_minimum_size(Vector2(128, 0));
 	required_label->set_text("Extra Req. Items");
+	required_label->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	required_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
 	
 	required_item_list = memnew(HBoxContainer);
 	required_section->add_child(required_item_list);
@@ -138,7 +161,8 @@ void RecipeItemListEditor::_create_ui() {
 	// More info section 2 (time info)
 	HBoxContainer *more_infos2 = memnew(HBoxContainer);
 	required_section->add_child(more_infos2);
-	more_infos2->set_custom_minimum_size(Vector2(0, 32));
+	more_infos2->set_custom_minimum_size(Vector2(0, 16));
+	more_infos2->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	more_infos2->add_theme_constant_override("separation", 0);
 	
 	time_label = memnew(Label);
@@ -153,7 +177,7 @@ void RecipeItemListEditor::_create_ui() {
 	
 	time_icon = memnew(TextureRect);
 	more_infos2->add_child(time_icon);
-	time_icon->set_custom_minimum_size(Vector2(24, 24));
+	time_icon->set_custom_minimum_size(Vector2(24, 20));
 	time_icon->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	time_icon->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 	time_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
@@ -207,6 +231,10 @@ void RecipeItemListEditor::update_recipe() {
 	}
 	
 	_update_recipe_display();
+
+	// Ingredient/product children changed the content's minimum height; force a
+	// recompute so the parent VBox resizes this row immediately.
+	update_minimum_size();
 }
 
 void RecipeItemListEditor::_update_recipe_display() {
