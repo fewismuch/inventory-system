@@ -184,7 +184,7 @@ void CategoriesInItemEditor::_update_available_categories_option() {
 	if (!available_categories_option || !database) return;
 	
 	available_categories_option->clear();
-	available_categories_option->add_item("Select category to add...", -1);
+	available_categories_option->add_item("Select category to add", -1);
 	
 	// Get all available categories from database
 	TypedArray<ItemCategory> all_categories = database->get_item_categories();

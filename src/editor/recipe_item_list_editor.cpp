@@ -219,8 +219,8 @@ void RecipeItemListEditor::update_recipe() {
 		return;
 	}
 	
-	// Update time display (matching GDScript format)
-	time_label->set_text(String::num(recipe->get_time_to_craft()) + " secs");
+	// Update time display (limit decimals to avoid float artifacts like 0.10000000149012)
+	time_label->set_text(String::num(recipe->get_time_to_craft(), 2) + " secs");
 	
 	// Update craft station icon
 	Ref<CraftStationType> station = recipe->get_station();
