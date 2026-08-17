@@ -20,6 +20,8 @@
 #include <godot_cpp/classes/check_box.hpp>
 #include <godot_cpp/classes/color_picker_button.hpp>
 #include <godot_cpp/classes/editor_resource_picker.hpp>
+#include <godot_cpp/classes/editor_inspector.hpp>
+#include <godot_cpp/classes/timer.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include "item_definition_property_editor.h"
 
@@ -71,6 +73,15 @@ private:
     EditorResourcePicker* resource_value_picker;
     CheckBox* dynamic_property_checkbox;
     
+    // Inline editor for the resource value. A standalone EditorResourcePicker
+    // provides no editor of its own, so this inspector is embedded and shown
+    // when the picker is toggled open (mirrors the icon selector's behavior).
+    ScrollContainer* resource_inspector_scroll;
+    EditorInspector* resource_inspector;
+    bool resource_inspector_expanded;
+    Ref<Resource> resource_inspector_resource;
+    Timer* resource_edit_save_timer;
+    
     // State
     String selected_property_name;
 
@@ -117,6 +128,12 @@ private:
     void _on_color_value_changed(const Color& color);
     void _on_resource_value_changed(const Ref<Resource>& resource);
     void _on_dynamic_property_toggled(bool pressed);
+    void _on_resource_value_selected(const Ref<Resource>& resource, bool inspect);
+    void _set_resource_inspector_expanded(bool p_expanded);
+    void _set_resource_inspector_resource(const Ref<Resource>& p_resource);
+    void _on_edited_resource_changed();
+    void _on_resource_edit_save_timer_timeout();
+    void _save_edited_resource_now();
 };
 
 VARIANT_ENUM_CAST(CustomPropertiesEditor::ResourceType);

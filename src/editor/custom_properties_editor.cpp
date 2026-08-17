@@ -11,6 +11,7 @@
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_resource_picker.hpp>
+#include <godot_cpp/classes/editor_inspector.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/h_split_container.hpp>
 #include <godot_cpp/classes/item_list.hpp>
@@ -19,6 +20,7 @@
 #include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/resource_saver.hpp>
 #include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/spin_box.hpp>
@@ -45,7 +47,10 @@ void CustomPropertiesEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_bool_value_toggled", "pressed"), &CustomPropertiesEditor::_on_bool_value_toggled);
 	ClassDB::bind_method(D_METHOD("_on_color_value_changed", "color"), &CustomPropertiesEditor::_on_color_value_changed);
 	ClassDB::bind_method(D_METHOD("_on_resource_value_changed", "resource"), &CustomPropertiesEditor::_on_resource_value_changed);
+	ClassDB::bind_method(D_METHOD("_on_resource_value_selected", "resource", "inspect"), &CustomPropertiesEditor::_on_resource_value_selected);
 	ClassDB::bind_method(D_METHOD("_on_dynamic_property_toggled", "pressed"), &CustomPropertiesEditor::_on_dynamic_property_toggled);
+	ClassDB::bind_method(D_METHOD("_on_edited_resource_changed"), &CustomPropertiesEditor::_on_edited_resource_changed);
+	ClassDB::bind_method(D_METHOD("_on_resource_edit_save_timer_timeout"), &CustomPropertiesEditor::_on_resource_edit_save_timer_timeout);
 
 	ADD_SIGNAL(MethodInfo("changed"));
 
@@ -75,6 +80,10 @@ CustomPropertiesEditor::CustomPropertiesEditor() {
 	color_value_picker = nullptr;
 	resource_value_picker = nullptr;
 	dynamic_property_checkbox = nullptr;
+	resource_inspector_scroll = nullptr;
+	resource_inspector = nullptr;
+	resource_inspector_expanded = false;
+	resource_edit_save_timer = nullptr;
 	selected_property_name = "";
 }
 
@@ -204,6 +213,28 @@ void CustomPropertiesEditor::_ready() {
 
 	// Create all value controls (initially hidden)
 	_create_value_controls();
+
+	// Inline editor for the resource value. A standalone EditorResourcePicker
+	// does not provide any editor for the resource, so embed one to allow
+	// expanding and configuring the resource details (same as the icon selector).
+	resource_inspector_scroll = memnew(ScrollContainer);
+	property_details_vbox->add_child(resource_inspector_scroll);
+	resource_inspector_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	resource_inspector_scroll->set_custom_minimum_size(Vector2(0, 0));
+	resource_inspector_scroll->set_visible(false);
+
+	resource_inspector = memnew(EditorInspector);
+	resource_inspector_scroll->add_child(resource_inspector);
+	resource_inspector->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	resource_inspector->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+
+	// Debounce timer for persisting inline resource edits, so a burst of
+	// changes writes the file only once.
+	resource_edit_save_timer = memnew(Timer);
+	add_child(resource_edit_save_timer);
+	resource_edit_save_timer->set_one_shot(true);
+	resource_edit_save_timer->set_wait_time(0.5);
+	resource_edit_save_timer->connect("timeout", callable_mp(this, &CustomPropertiesEditor::_on_resource_edit_save_timer_timeout));
 
 	build_type_options();
 	_apply_theme();
@@ -420,7 +451,11 @@ void CustomPropertiesEditor::_create_value_controls() {
 	resource_hbox->add_child(resource_value_picker);
 	resource_value_picker->set_base_type("Resource");
 	resource_value_picker->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	// Toggle mode makes the picker's main button expand/collapse the inline
+	// inspector below, instead of always opening the resource picker dialog.
+	resource_value_picker->set_toggle_mode(true);
 	resource_value_picker->connect("resource_changed", callable_mp(this, &CustomPropertiesEditor::_on_resource_value_changed));
+	resource_value_picker->connect("resource_selected", callable_mp(this, &CustomPropertiesEditor::_on_resource_value_selected));
 }
 
 void CustomPropertiesEditor::_apply_theme() {
@@ -580,6 +615,16 @@ void CustomPropertiesEditor::_update_property_details() {
 				resource = value;
 			}
 			resource_value_picker->set_edited_resource(resource);
+
+			// Keep the inline inspector in sync when the edited resource changes.
+			if (resource_inspector_expanded) {
+				if (resource.is_valid()) {
+					_set_resource_inspector_resource(resource);
+					resource_inspector->edit(resource.ptr());
+				} else {
+					_set_resource_inspector_expanded(false);
+				}
+			}
 		} break;
 	}
 
@@ -592,6 +637,12 @@ void CustomPropertiesEditor::_update_property_details() {
 void CustomPropertiesEditor::_show_property_value_control(int type) {
 	if (!property_value_container)
 		return;
+
+	// The resource details inspector only applies to the resource value; collapse
+	// it when the user switches to another value type.
+	if (type != Variant::OBJECT && resource_inspector_expanded) {
+		_set_resource_inspector_expanded(false);
+	}
 
 	// Hide all value controls first
 	for (int i = 0; i < property_value_container->get_child_count(); i++) {
@@ -1067,6 +1118,16 @@ void CustomPropertiesEditor::_on_resource_value_changed(const Ref<Resource> &res
 	set_properties_to_resource(properties);
 
 	emit_signal("changed");
+
+	// Keep the inline inspector in sync with the newly assigned resource.
+	if (resource_inspector_expanded) {
+		if (resource.is_valid()) {
+			_set_resource_inspector_resource(resource);
+			resource_inspector->edit(resource.ptr());
+		} else {
+			_set_resource_inspector_expanded(false);
+		}
+	}
 }
 
 void CustomPropertiesEditor::_on_dynamic_property_toggled(bool pressed) {
@@ -1087,6 +1148,89 @@ void CustomPropertiesEditor::_on_dynamic_property_toggled(bool pressed) {
 		set_dynamic_properties_to_resource(dynamic_properties);
 
 		emit_signal("changed");
+	}
+}
+
+void CustomPropertiesEditor::_on_resource_value_selected(const Ref<Resource>& resource, bool inspect) {
+	_set_resource_inspector_expanded(!resource_inspector_expanded);
+}
+
+void CustomPropertiesEditor::_set_resource_inspector_expanded(bool p_expanded) {
+	resource_inspector_expanded = p_expanded;
+
+	if (resource_value_picker) {
+		resource_value_picker->set_toggle_pressed(p_expanded);
+	}
+
+	if (p_expanded) {
+		Ref<Resource> resource = resource_value_picker->get_edited_resource();
+		if (resource.is_valid()) {
+			_set_resource_inspector_resource(resource);
+			resource_inspector->edit(resource.ptr());
+			resource_inspector_scroll->set_custom_minimum_size(Vector2(0, 500));
+			resource_inspector_scroll->set_visible(true);
+			return;
+		}
+		// No resource to edit; keep the section collapsed.
+		resource_inspector_expanded = false;
+		if (resource_value_picker) {
+			resource_value_picker->set_toggle_pressed(false);
+		}
+	} else {
+		_set_resource_inspector_resource(Ref<Resource>());
+	}
+
+	resource_inspector_scroll->set_custom_minimum_size(Vector2(0, 0));
+	resource_inspector_scroll->set_visible(false);
+}
+
+void CustomPropertiesEditor::_set_resource_inspector_resource(const Ref<Resource>& p_resource) {
+	if (resource_inspector_resource == p_resource) {
+		return;
+	}
+
+	// Persist any pending inline edit of the previous resource before switching.
+	if (resource_edit_save_timer && !resource_edit_save_timer->is_stopped()) {
+		_save_edited_resource_now();
+	}
+
+	Callable changed_callback = Callable(this, "_on_edited_resource_changed");
+	if (resource_inspector_resource.is_valid() && resource_inspector_resource->is_connected("changed", changed_callback)) {
+		resource_inspector_resource->disconnect("changed", changed_callback);
+	}
+
+	resource_inspector_resource = p_resource;
+
+	if (p_resource.is_valid()) {
+		p_resource->connect("changed", changed_callback);
+	}
+}
+
+void CustomPropertiesEditor::_on_edited_resource_changed() {
+	// Debounce saves so a burst of inline edits writes the file only once.
+	if (resource_edit_save_timer) {
+		resource_edit_save_timer->start();
+	}
+}
+
+void CustomPropertiesEditor::_on_resource_edit_save_timer_timeout() {
+	_save_edited_resource_now();
+}
+
+void CustomPropertiesEditor::_save_edited_resource_now() {
+	if (resource_edit_save_timer) {
+		resource_edit_save_timer->stop();
+	}
+	if (!resource_inspector_resource.is_valid()) {
+		return;
+	}
+	String path = resource_inspector_resource->get_path();
+	if (path.is_empty() || path == "res://") {
+		return;
+	}
+	Error err = ResourceSaver::get_singleton()->save(resource_inspector_resource, path);
+	if (err != OK) {
+		UtilityFunctions::push_error("Inventory System: failed to save edited resource '" + path + "' (error " + itos(err) + ").");
 	}
 }
 
