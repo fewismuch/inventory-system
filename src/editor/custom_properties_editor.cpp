@@ -11,7 +11,6 @@
 #include <godot_cpp/classes/control.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_resource_picker.hpp>
-#include <godot_cpp/classes/editor_inspector.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/h_split_container.hpp>
 #include <godot_cpp/classes/item_list.hpp>
@@ -80,9 +79,6 @@ CustomPropertiesEditor::CustomPropertiesEditor() {
 	color_value_picker = nullptr;
 	resource_value_picker = nullptr;
 	dynamic_property_checkbox = nullptr;
-	resource_inspector_scroll = nullptr;
-	resource_inspector = nullptr;
-	resource_inspector_expanded = false;
 	resource_edit_save_timer = nullptr;
 	selected_property_name = "";
 }
@@ -214,22 +210,9 @@ void CustomPropertiesEditor::_ready() {
 	// Create all value controls (initially hidden)
 	_create_value_controls();
 
-	// Inline editor for the resource value. A standalone EditorResourcePicker
-	// does not provide any editor for the resource, so embed one to allow
-	// expanding and configuring the resource details (same as the icon selector).
-	resource_inspector_scroll = memnew(ScrollContainer);
-	property_details_vbox->add_child(resource_inspector_scroll);
-	resource_inspector_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	resource_inspector_scroll->set_custom_minimum_size(Vector2(0, 0));
-	resource_inspector_scroll->set_visible(false);
-
-	resource_inspector = memnew(EditorInspector);
-	resource_inspector_scroll->add_child(resource_inspector);
-	resource_inspector->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	resource_inspector->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-
-	// Debounce timer for persisting inline resource edits, so a burst of
-	// changes writes the file only once.
+	// Debounce timer for persisting resource edits. External resources are
+	// saved back to their file; new/embedded resources are persisted through
+	// the database autosave when the resource emits "changed".
 	resource_edit_save_timer = memnew(Timer);
 	add_child(resource_edit_save_timer);
 	resource_edit_save_timer->set_one_shot(true);
@@ -451,9 +434,8 @@ void CustomPropertiesEditor::_create_value_controls() {
 	resource_hbox->add_child(resource_value_picker);
 	resource_value_picker->set_base_type("Resource");
 	resource_value_picker->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	// Toggle mode makes the picker's main button expand/collapse the inline
-	// inspector below, instead of always opening the resource picker dialog.
-	resource_value_picker->set_toggle_mode(true);
+	// Clicking the main button (or the context menu "Edit") opens the resource
+	// in the editor's main inspector, where class/category sections are shown.
 	resource_value_picker->connect("resource_changed", callable_mp(this, &CustomPropertiesEditor::_on_resource_value_changed));
 	resource_value_picker->connect("resource_selected", callable_mp(this, &CustomPropertiesEditor::_on_resource_value_selected));
 }
@@ -616,15 +598,9 @@ void CustomPropertiesEditor::_update_property_details() {
 			}
 			resource_value_picker->set_edited_resource(resource);
 
-			// Keep the inline inspector in sync when the edited resource changes.
-			if (resource_inspector_expanded) {
-				if (resource.is_valid()) {
-					_set_resource_inspector_resource(resource);
-					resource_inspector->edit(resource.ptr());
-				} else {
-					_set_resource_inspector_expanded(false);
-				}
-			}
+			// Track the displayed resource so edits made in the main inspector
+			// are persisted (saved back to the file or via the database autosave).
+			_set_edited_resource_for_save(resource);
 		} break;
 	}
 
@@ -637,12 +613,6 @@ void CustomPropertiesEditor::_update_property_details() {
 void CustomPropertiesEditor::_show_property_value_control(int type) {
 	if (!property_value_container)
 		return;
-
-	// The resource details inspector only applies to the resource value; collapse
-	// it when the user switches to another value type.
-	if (type != Variant::OBJECT && resource_inspector_expanded) {
-		_set_resource_inspector_expanded(false);
-	}
 
 	// Hide all value controls first
 	for (int i = 0; i < property_value_container->get_child_count(); i++) {
@@ -1007,9 +977,13 @@ void CustomPropertiesEditor::_on_property_type_item_selected(int index) {
 			new_value = Color();
 			break;
 		case Variant::OBJECT: {
-			// Store as string path, not resource object
-			// Intelligent conversion: String -> String (keep the path)
-			if (current_type == Variant::STRING) {
+			// Keep an existing resource object (e.g. a newly created sub-resource)
+			// so it is not discarded when the Resource type is re-selected.
+			if (current_type == Variant::OBJECT) {
+				new_value = current_value;
+			} else if (current_type == Variant::STRING) {
+				// Store as string path, not resource object
+				// Intelligent conversion: String -> String (keep the path)
 				String str_value = current_value;
 				if (str_value.ends_with(".tres") || str_value.ends_with(".res") || 
 				    str_value.ends_with(".tscn") || str_value.ends_with(".scn") || 
@@ -1108,9 +1082,16 @@ void CustomPropertiesEditor::_on_resource_value_changed(const Ref<Resource> &res
 	}
 
 	Dictionary properties = get_properties_from_resource();
-	// Store as string path instead of resource object to avoid database save issues
-	if (resource.is_valid() && !resource->get_path().is_empty()) {
-		properties[selected_property_name] = resource->get_path();
+	// External resources are stored as path strings. A newly created resource
+	// has no file path yet, so keep the object itself: it is then embedded as a
+	// sub-resource of the database on save and survives reloads.
+	if (resource.is_valid()) {
+		String path = resource->get_path();
+		if (!path.is_empty() && !path.contains("::")) {
+			properties[selected_property_name] = path;
+		} else {
+			properties[selected_property_name] = resource;
+		}
 	} else {
 		// Use special marker for empty resource properties to maintain resource type
 		properties[selected_property_name] = "res://";
@@ -1119,15 +1100,9 @@ void CustomPropertiesEditor::_on_resource_value_changed(const Ref<Resource> &res
 
 	emit_signal("changed");
 
-	// Keep the inline inspector in sync with the newly assigned resource.
-	if (resource_inspector_expanded) {
-		if (resource.is_valid()) {
-			_set_resource_inspector_resource(resource);
-			resource_inspector->edit(resource.ptr());
-		} else {
-			_set_resource_inspector_expanded(false);
-		}
-	}
+	// Track the newly assigned resource so edits made in the main inspector
+	// are persisted (saved back to the file or via the database autosave).
+	_set_edited_resource_for_save(resource);
 }
 
 void CustomPropertiesEditor::_on_dynamic_property_toggled(bool pressed) {
@@ -1152,54 +1127,30 @@ void CustomPropertiesEditor::_on_dynamic_property_toggled(bool pressed) {
 }
 
 void CustomPropertiesEditor::_on_resource_value_selected(const Ref<Resource>& resource, bool inspect) {
-	_set_resource_inspector_expanded(!resource_inspector_expanded);
+	// Open the resource in the editor's main inspector, where inherited
+	// classes and categories (e.g. @export_category) are shown as sections.
+	// A standalone EditorInspector in the plugin cannot display them.
+	if (resource.is_valid()) {
+		EditorInterface::get_singleton()->edit_resource(resource);
+	}
 }
 
-void CustomPropertiesEditor::_set_resource_inspector_expanded(bool p_expanded) {
-	resource_inspector_expanded = p_expanded;
-
-	if (resource_value_picker) {
-		resource_value_picker->set_toggle_pressed(p_expanded);
-	}
-
-	if (p_expanded) {
-		Ref<Resource> resource = resource_value_picker->get_edited_resource();
-		if (resource.is_valid()) {
-			_set_resource_inspector_resource(resource);
-			resource_inspector->edit(resource.ptr());
-			resource_inspector_scroll->set_custom_minimum_size(Vector2(0, 500));
-			resource_inspector_scroll->set_visible(true);
-			return;
-		}
-		// No resource to edit; keep the section collapsed.
-		resource_inspector_expanded = false;
-		if (resource_value_picker) {
-			resource_value_picker->set_toggle_pressed(false);
-		}
-	} else {
-		_set_resource_inspector_resource(Ref<Resource>());
-	}
-
-	resource_inspector_scroll->set_custom_minimum_size(Vector2(0, 0));
-	resource_inspector_scroll->set_visible(false);
-}
-
-void CustomPropertiesEditor::_set_resource_inspector_resource(const Ref<Resource>& p_resource) {
-	if (resource_inspector_resource == p_resource) {
+void CustomPropertiesEditor::_set_edited_resource_for_save(const Ref<Resource>& p_resource) {
+	if (edited_resource_for_save == p_resource) {
 		return;
 	}
 
-	// Persist any pending inline edit of the previous resource before switching.
+	// Persist any pending edit of the previous resource before switching.
 	if (resource_edit_save_timer && !resource_edit_save_timer->is_stopped()) {
 		_save_edited_resource_now();
 	}
 
 	Callable changed_callback = Callable(this, "_on_edited_resource_changed");
-	if (resource_inspector_resource.is_valid() && resource_inspector_resource->is_connected("changed", changed_callback)) {
-		resource_inspector_resource->disconnect("changed", changed_callback);
+	if (edited_resource_for_save.is_valid() && edited_resource_for_save->is_connected("changed", changed_callback)) {
+		edited_resource_for_save->disconnect("changed", changed_callback);
 	}
 
-	resource_inspector_resource = p_resource;
+	edited_resource_for_save = p_resource;
 
 	if (p_resource.is_valid()) {
 		p_resource->connect("changed", changed_callback);
@@ -1207,9 +1158,20 @@ void CustomPropertiesEditor::_set_resource_inspector_resource(const Ref<Resource
 }
 
 void CustomPropertiesEditor::_on_edited_resource_changed() {
-	// Debounce saves so a burst of inline edits writes the file only once.
-	if (resource_edit_save_timer) {
-		resource_edit_save_timer->start();
+	if (!edited_resource_for_save.is_valid()) {
+		return;
+	}
+	String path = edited_resource_for_save->get_path();
+	if (path.is_empty() || path == "res://" || path.contains("::")) {
+		// Newly created or database-embedded resource: persist it through the
+		// database autosave, since the resource is stored inside the database.
+		emit_signal("changed");
+	} else {
+		// External resource file: debounce a direct save so a burst of edits
+		// writes the file only once.
+		if (resource_edit_save_timer) {
+			resource_edit_save_timer->start();
+		}
 	}
 }
 
@@ -1221,14 +1183,16 @@ void CustomPropertiesEditor::_save_edited_resource_now() {
 	if (resource_edit_save_timer) {
 		resource_edit_save_timer->stop();
 	}
-	if (!resource_inspector_resource.is_valid()) {
+	if (!edited_resource_for_save.is_valid()) {
 		return;
 	}
-	String path = resource_inspector_resource->get_path();
-	if (path.is_empty() || path == "res://") {
+	String path = edited_resource_for_save->get_path();
+	// Only external resources (real file paths) are saved directly; new and
+	// database-embedded resources persist through the database autosave.
+	if (path.is_empty() || path == "res://" || path.contains("::")) {
 		return;
 	}
-	Error err = ResourceSaver::get_singleton()->save(resource_inspector_resource, path);
+	Error err = ResourceSaver::get_singleton()->save(edited_resource_for_save, path);
 	if (err != OK) {
 		UtilityFunctions::push_error("Inventory System: failed to save edited resource '" + path + "' (error " + itos(err) + ").");
 	}
