@@ -17,10 +17,8 @@
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/line_edit.hpp>
 #include <godot_cpp/classes/option_button.hpp>
-#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/resource_saver.hpp>
-#include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/spin_box.hpp>
 #include <godot_cpp/classes/theme.hpp>
@@ -38,7 +36,7 @@ void CustomPropertiesEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_add_property_button_pressed"), &CustomPropertiesEditor::_on_add_property_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_remove_property_button_pressed"), &CustomPropertiesEditor::_on_remove_property_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_properties_list_item_selected", "index"), &CustomPropertiesEditor::_on_properties_list_item_selected);
-	ClassDB::bind_method(D_METHOD("_on_property_name_item_selected", "index"), &CustomPropertiesEditor::_on_property_name_item_selected);
+	ClassDB::bind_method(D_METHOD("_on_property_name_text_changed", "text"), &CustomPropertiesEditor::_on_property_name_text_changed);
 	ClassDB::bind_method(D_METHOD("_on_property_type_item_selected", "index"), &CustomPropertiesEditor::_on_property_type_item_selected);
 	ClassDB::bind_method(D_METHOD("_on_string_value_text_changed", "text"), &CustomPropertiesEditor::_on_string_value_text_changed);
 	ClassDB::bind_method(D_METHOD("_on_int_value_changed", "value"), &CustomPropertiesEditor::_on_int_value_changed);
@@ -69,7 +67,7 @@ CustomPropertiesEditor::CustomPropertiesEditor() {
 	remove_property_button = nullptr;
 	properties_list = nullptr;
 	property_details_vbox = nullptr;
-	property_name_option = nullptr;
+	property_name_line_edit = nullptr;
 	property_type_option = nullptr;
 	property_value_container = nullptr;
 	string_value_edit = nullptr;
@@ -159,7 +157,7 @@ void CustomPropertiesEditor::_ready() {
 	property_details_vbox->add_child(details_label);
 	details_label->set_text("Property Details:");
 
-	// Property name field - dropdown populated from Project Settings
+	// Property name field
 	HBoxContainer *name_hbox = memnew(HBoxContainer);
 	property_details_vbox->add_child(name_hbox);
 
@@ -168,11 +166,11 @@ void CustomPropertiesEditor::_ready() {
 	name_label->set_text("Property Name:");
 	name_label->set_custom_minimum_size(Vector2(160, 0));
 
-	property_name_option = memnew(OptionButton);
-	name_hbox->add_child(property_name_option);
-	property_name_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	property_name_option->set_tooltip_text("Select a property name");
-	property_name_option->connect("item_selected", callable_mp(this, &CustomPropertiesEditor::_on_property_name_item_selected));
+	property_name_line_edit = memnew(LineEdit);
+	name_hbox->add_child(property_name_line_edit);
+	property_name_line_edit->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	property_name_line_edit->set_placeholder("Enter property name");
+	property_name_line_edit->connect("text_changed", callable_mp(this, &CustomPropertiesEditor::_on_property_name_text_changed));
 
 	// Property type field
 	HBoxContainer *type_hbox = memnew(HBoxContainer);
@@ -530,16 +528,8 @@ void CustomPropertiesEditor::_update_property_details() {
 
 	property_details_vbox->set_visible(true);
 
-	// Rebuild the property name dropdown and select the current name.
-	// The current name is always included even if it is not in the
-	// configured list, so existing/legacy properties stay selectable.
-	_rebuild_property_name_option();
-	for (int i = 0; i < property_name_option->get_item_count(); i++) {
-		if (property_name_option->get_item_text(i) == property_name) {
-			property_name_option->select(i);
-			break;
-		}
-	}
+	// Update property name field
+	property_name_line_edit->set_text(property_name);
 
 	// Update property value and type
 	Variant value = properties[property_name];
@@ -679,7 +669,7 @@ void CustomPropertiesEditor::_on_add_property_button_pressed() {
 	}
 
 	Dictionary properties = get_properties_from_resource();
-	String new_prop_name = _get_next_available_property_name(properties);
+	String new_prop_name = "new_property_" + String::num_int64(properties.size());
 
 	// Set default value as string
 	properties[new_prop_name] = String();
@@ -739,134 +729,6 @@ void CustomPropertiesEditor::_on_properties_list_item_selected(int index) {
 	_update_property_details();
 }
 
-PackedStringArray CustomPropertiesEditor::_get_property_name_options() {
-	PackedStringArray options;
-	ProjectSettings *project_settings = ProjectSettings::get_singleton();
-
-	// Resolve the script that holds the property name list. An explicit path
-	// setting takes priority; otherwise the script is located through the
-	// project's global class list (e.g. class AttributesConstant).
-	String script_path = project_settings->get_setting(PROPERTY_NAMES_SCRIPT_SETTING, String(""));
-	String class_name = project_settings->get_setting(PROPERTY_NAMES_CLASS_SETTING, String("AttributesConstant"));
-	if (script_path.is_empty()) {
-		TypedArray<Dictionary> global_classes = project_settings->get_global_class_list();
-		for (int i = 0; i < global_classes.size(); i++) {
-			Dictionary entry = global_classes[i];
-			if (entry.has("class") && entry["class"] == class_name) {
-				script_path = entry.get("path", "");
-				break;
-			}
-		}
-	}
-
-	String constant_name = project_settings->get_setting(PROPERTY_NAMES_CONSTANT_SETTING, String("BASE_ATTRIBUTES"));
-	bool script_loaded = false;
-	bool constant_found = false;
-
-	if (!script_path.is_empty()) {
-		// CACHE_MODE_IGNORE re-reads the file so edits take effect without an
-		// editor restart.
-		Ref<Resource> loaded = ResourceLoader::get_singleton()->load(script_path, "Script", ResourceLoader::CACHE_MODE_IGNORE);
-		Ref<Script> script = loaded;
-		if (script.is_valid()) {
-			script_loaded = true;
-			Dictionary constants = script->get_script_constant_map();
-			if (constants.has(constant_name)) {
-				constant_found = true;
-				Variant value = constants[constant_name];
-				if (value.get_type() == Variant::PACKED_STRING_ARRAY) {
-					options = value;
-				} else if (value.get_type() == Variant::ARRAY) {
-					Array arr = value;
-					for (int i = 0; i < arr.size(); i++) {
-						options.append(arr[i]);
-					}
-				}
-			}
-		}
-	}
-
-	// Fall back to the manually configured list.
-	if (options.is_empty()) {
-		Variant value = project_settings->get_setting(PROPERTY_NAME_OPTIONS_SETTING);
-		if (value.get_type() == Variant::PACKED_STRING_ARRAY) {
-			options = value;
-		} else if (value.get_type() == Variant::ARRAY) {
-			Array arr = value;
-			for (int i = 0; i < arr.size(); i++) {
-				options.append(arr[i]);
-			}
-		}
-	}
-
-	// Only report when nothing could be loaded, so the reason is visible in the
-	// editor Output panel without spamming when everything works.
-	if (options.is_empty()) {
-		if (script_path.is_empty()) {
-			UtilityFunctions::push_warning(String("Inventory System: could not find script for class '") + class_name +
-					"' in the global class list. Check 'addons/inventory_system/editor/property_names_class' or set 'addons/inventory_system/editor/property_names_script'.");
-		} else if (!script_loaded) {
-			UtilityFunctions::push_warning(String("Inventory System: could not load script '") + script_path + "' for property names.");
-		} else if (!constant_found) {
-			UtilityFunctions::push_warning(String("Inventory System: constant '") + constant_name + "' not found in '" + script_path + "'.");
-		}
-	}
-
-	return options;
-}
-
-String CustomPropertiesEditor::_get_next_available_property_name(const Dictionary &properties) {
-	PackedStringArray options = _get_property_name_options();
-	for (int i = 0; i < options.size(); i++) {
-		String name = options[i];
-		if (!name.is_empty() && !properties.has(name)) {
-			return name;
-		}
-	}
-	return "new_property_" + String::num_int64(properties.size());
-}
-
-void CustomPropertiesEditor::_rebuild_property_name_option() {
-	if (!property_name_option) {
-		return;
-	}
-
-	property_name_option->clear();
-
-	PackedStringArray options = _get_property_name_options();
-	for (int i = 0; i < options.size(); i++) {
-		String name = options[i];
-		if (name.is_empty()) {
-			continue;
-		}
-		bool exists = false;
-		for (int j = 0; j < property_name_option->get_item_count(); j++) {
-			if (property_name_option->get_item_text(j) == name) {
-				exists = true;
-				break;
-			}
-		}
-		if (!exists) {
-			property_name_option->add_item(name);
-		}
-	}
-
-	// Always keep the current property name visible so the selection is
-	// shown even when it is not part of the configured list.
-	if (!selected_property_name.is_empty()) {
-		bool exists = false;
-		for (int j = 0; j < property_name_option->get_item_count(); j++) {
-			if (property_name_option->get_item_text(j) == selected_property_name) {
-				exists = true;
-				break;
-			}
-		}
-		if (!exists) {
-			property_name_option->add_item(selected_property_name);
-		}
-	}
-}
-
 String CustomPropertiesEditor::_format_property_value(const Variant &value) const {
 	switch (value.get_type()) {
 		case Variant::COLOR: {
@@ -885,16 +747,12 @@ String CustomPropertiesEditor::_format_property_value(const Variant &value) cons
 	return text;
 }
 
-void CustomPropertiesEditor::_on_property_name_item_selected(int index) {
+void CustomPropertiesEditor::_on_property_name_text_changed(const String &text) {
 	if (!current_resource.is_valid() || selected_property_name.is_empty()) {
 		return;
 	}
-	if (index < 0 || index >= property_name_option->get_item_count()) {
-		return;
-	}
 
-	String new_name = property_name_option->get_item_text(index);
-	if (new_name == selected_property_name) {
+	if (text.is_empty() || text == selected_property_name) {
 		return; // No change
 	}
 
@@ -902,37 +760,36 @@ void CustomPropertiesEditor::_on_property_name_item_selected(int index) {
 	if (!properties.has(selected_property_name)) {
 		return;
 	}
-	if (properties.has(new_name)) {
+	if (properties.has(text)) {
 		return; // Avoid overwriting an existing property
 	}
 
 	// Rename the property
 	Variant value = properties[selected_property_name];
 	properties.erase(selected_property_name);
-	properties[new_name] = value;
+	properties[text] = value;
 	set_properties_to_resource(properties);
 
 	// Handle dynamic properties renaming
 	TypedArray<String> dynamic_properties = get_dynamic_properties_from_resource();
 	int dynamic_index = dynamic_properties.find(selected_property_name);
 	if (dynamic_index != -1) {
-		dynamic_properties[dynamic_index] = new_name;
+		dynamic_properties[dynamic_index] = text;
 		set_dynamic_properties_to_resource(dynamic_properties);
 	}
 
-	selected_property_name = new_name;
+	selected_property_name = text;
 	_update_properties_list();
 
 	emit_signal("changed");
 
 	// Reselect the renamed property
 	for (int i = 0; i < properties_list->get_item_count(); i++) {
-		if (properties_list->get_item_metadata(i) == new_name) {
+		if (properties_list->get_item_metadata(i) == text) {
 			properties_list->select(i);
 			break;
 		}
 	}
-	_update_property_details();
 }
 
 void CustomPropertiesEditor::_on_property_type_item_selected(int index) {

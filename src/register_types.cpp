@@ -1,11 +1,9 @@
 #include "register_types.h"
 #include <gdextension_interface.h>
 #include <godot_cpp/classes/engine.hpp>
-#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
-#include <godot_cpp/variant/packed_string_array.hpp>
 
 #include "base/craft_station_type.h"
 #include "base/inventory_database.h"
@@ -82,51 +80,6 @@ void initialize_gdextension_types(ModuleInitializationLevel p_level) {
 
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
-		// Register the configurable list of allowed custom property names used by the
-		// Custom Properties editors (Item Definition / Item Category).
-		ProjectSettings *project_settings = ProjectSettings::get_singleton();
-
-		// Script source for the allowed custom property names: the plugin looks up
-		// the global class (e.g. AttributesConstant) and reads its constant
-		// (e.g. BASE_ATTRIBUTES) so the dropdown stays in sync with game code.
-		// An explicit script path can also be set directly as an alternative.
-		const String script_setting = "addons/inventory_system/editor/property_names_script";
-		if (!project_settings->has_setting(script_setting)) {
-			project_settings->set_setting(script_setting, String());
-		}
-		Dictionary script_info;
-		script_info["name"] = script_setting;
-		script_info["type"] = Variant::STRING;
-		project_settings->add_property_info(script_info);
-
-		const String class_setting = "addons/inventory_system/editor/property_names_class";
-		if (!project_settings->has_setting(class_setting)) {
-			project_settings->set_setting(class_setting, "AttributesConstant");
-		}
-		Dictionary class_info;
-		class_info["name"] = class_setting;
-		class_info["type"] = Variant::STRING;
-		project_settings->add_property_info(class_info);
-
-		const String constant_setting = "addons/inventory_system/editor/property_names_constant";
-		if (!project_settings->has_setting(constant_setting)) {
-			project_settings->set_setting(constant_setting, "BASE_ATTRIBUTES");
-		}
-		Dictionary constant_info;
-		constant_info["name"] = constant_setting;
-		constant_info["type"] = Variant::STRING;
-		project_settings->add_property_info(constant_info);
-
-		// Manual fallback list, only used when the script source above is not set up.
-		const String property_options_setting = "addons/inventory_system/editor/item_property_name_options";
-		if (!project_settings->has_setting(property_options_setting)) {
-			project_settings->set_setting(property_options_setting, PackedStringArray());
-		}
-		Dictionary property_info;
-		property_info["name"] = property_options_setting;
-		property_info["type"] = Variant::PACKED_STRING_ARRAY;
-		project_settings->add_property_info(property_info);
-
 		GDREGISTER_INTERNAL_CLASS(InventoryEditor);
 		GDREGISTER_INTERNAL_CLASS(BaseInventoryEditor);
 		GDREGISTER_INTERNAL_CLASS(BaseResourceEditor);

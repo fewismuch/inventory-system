@@ -5,10 +5,8 @@
 
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
-#include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/editor_resource_picker.hpp>
-#include <godot_cpp/classes/editor_inspector.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/editor_plugin.hpp>
 
@@ -21,9 +19,6 @@ private:
     HBoxContainer* picker_row;
     Label* label;
     EditorResourcePicker* texture_picker;
-    ScrollContainer* inspector_scroll;
-    EditorInspector* inspector;
-    bool expanded;
 
 protected:
     static void _bind_methods();
@@ -39,7 +34,6 @@ public:
 private:
     void _on_texture_picker_resource_changed(const Ref<Resource>& resource);
     void _on_texture_picker_resource_selected(const Ref<Resource>& resource, bool inspect);
-    void _set_expanded(bool p_expanded);
 };
 
 #endif // ICON_SELECTOR_H
