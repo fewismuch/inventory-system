@@ -9,8 +9,10 @@
 #include <godot_cpp/classes/check_box.hpp>
 #include <godot_cpp/classes/color_picker_button.hpp>
 #include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_resource_picker.hpp>
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/h_split_container.hpp>
 #include <godot_cpp/classes/item_list.hpp>
@@ -78,6 +80,7 @@ CustomPropertiesEditor::CustomPropertiesEditor() {
 	resource_value_picker = nullptr;
 	dynamic_property_checkbox = nullptr;
 	resource_edit_save_timer = nullptr;
+	resource_save_retries = 0;
 	selected_property_name = "";
 }
 
@@ -579,14 +582,12 @@ void CustomPropertiesEditor::_update_property_details() {
 			if (value.get_type() == Variant::STRING) {
 				// Load resource from path
 				String path = value;
-				UtilityFunctions::print("[CPROBE] detail obj val=STRING path=", path);
 				if (!path.is_empty() && path != "res://") {
 					resource = ResourceLoader::get_singleton()->load(path);
 				}
 			} else {
 				// Direct resource object (for backward compatibility)
 				resource = value;
-				UtilityFunctions::print("[CPROBE] detail obj val=OBJECT class=", resource.is_valid() ? resource->get_class() : String("<null>"), " path=", resource.is_valid() ? resource->get_path() : String("<null>"), " inst=", resource.is_valid() ? String::num_int64(resource->get_instance_id()) : String("-1"));
 			}
 			resource_value_picker->set_edited_resource(resource);
 
@@ -801,7 +802,6 @@ void CustomPropertiesEditor::_on_property_type_item_selected(int index) {
 
 	int type = property_type_option->get_item_id(index);
 	Dictionary properties = get_properties_from_resource();
-	UtilityFunctions::print("[CPROBE] type item selected prop=", selected_property_name, " newType=", type, " curType=", properties[selected_property_name].get_type());
 
 	// Get current value before conversion for intelligent conversion
 	Variant current_value = properties[selected_property_name];
@@ -942,8 +942,6 @@ void CustomPropertiesEditor::_on_resource_value_changed(const Ref<Resource> &res
 	}
 
 	Dictionary properties = get_properties_from_resource();
-	String dbg_path = resource.is_valid() ? resource->get_path() : String("<null>");
-	UtilityFunctions::print("[CPROBE] resource_changed prop=", selected_property_name, " valid=", resource.is_valid(), " class=", resource.is_valid() ? resource->get_class() : String("-"), " path=", dbg_path, " inst=", resource.is_valid() ? String::num_int64(resource->get_instance_id()) : String("-1"));
 	// External resources are stored as path strings. A newly created resource
 	// has no file path yet, so keep the object itself: it is then embedded as a
 	// sub-resource of the database on save and survives reloads.
@@ -992,7 +990,6 @@ void CustomPropertiesEditor::_on_resource_value_selected(const Ref<Resource>& re
 	// Open the resource in the editor's main inspector, where inherited
 	// classes and categories (e.g. @export_category) are shown as sections.
 	// A standalone EditorInspector in the plugin cannot display them.
-	UtilityFunctions::print("[CPROBE] resource_selected valid=", resource.is_valid(), " class=", resource.is_valid() ? resource->get_class() : String("-"), " path=", resource.is_valid() ? resource->get_path() : String("<null>"), " inst=", resource.is_valid() ? String::num_int64(resource->get_instance_id()) : String("-1"), " inspect=", inspect);
 	if (resource.is_valid()) {
 		EditorInterface::get_singleton()->edit_resource(resource);
 	}
@@ -1003,7 +1000,8 @@ void CustomPropertiesEditor::_set_edited_resource_for_save(const Ref<Resource>& 
 		return;
 	}
 
-	UtilityFunctions::print("[CPROBE] track-resource switch old=", edited_resource_for_save.is_valid() ? edited_resource_for_save->get_class() : String("<null>"), "/", edited_resource_for_save.is_valid() ? String::num_int64(edited_resource_for_save->get_instance_id()) : String("-1"), " new=", p_resource.is_valid() ? p_resource->get_class() : String("<null>"), "/", p_resource.is_valid() ? String::num_int64(p_resource->get_instance_id()) : String("-1"));
+	// Reset retry state since we are switching to a different resource.
+	resource_save_retries = 0;
 
 	// Persist any pending edit of the previous resource before switching.
 	if (resource_edit_save_timer && !resource_edit_save_timer->is_stopped()) {
@@ -1027,7 +1025,6 @@ void CustomPropertiesEditor::_on_edited_resource_changed() {
 		return;
 	}
 	String path = edited_resource_for_save->get_path();
-	UtilityFunctions::print("[CPROBE] edited-resource changed class=", edited_resource_for_save->get_class(), " path=", path, " inst=", String::num_int64(edited_resource_for_save->get_instance_id()));
 	if (path.is_empty() || path == "res://" || path.contains("::")) {
 		// Newly created or database-embedded resource: persist it through the
 		// database autosave, since the resource is stored inside the database.
@@ -1039,7 +1036,6 @@ void CustomPropertiesEditor::_on_edited_resource_changed() {
 			if (!properties.has(selected_property_name) || properties[selected_property_name] != edited_resource_for_save) {
 				properties[selected_property_name] = edited_resource_for_save;
 				set_properties_to_resource(properties);
-				UtilityFunctions::print("[CPROBE] re-stored edited object into property '", selected_property_name, "'");
 			}
 		}
 		emit_signal("changed");
@@ -1069,10 +1065,33 @@ void CustomPropertiesEditor::_save_edited_resource_now() {
 	if (path.is_empty() || path == "res://" || path.contains("::")) {
 		return;
 	}
-	Error err = ResourceSaver::get_singleton()->save(edited_resource_for_save, path);
+
+	// Write to a hidden sibling file first and rename it over the target so the
+	// editor never observes a half-written resource file.
+	String ext = path.get_extension();
+	String tmp_path = path.get_base_dir() + "/." + path.get_file() + ".tmp." + (ext.is_empty() ? String("tres") : ext);
+	Error err = ResourceSaver::get_singleton()->save(edited_resource_for_save, tmp_path);
+	if (err == OK) {
+		if (DirAccess::rename_absolute(tmp_path, path) != OK) {
+			DirAccess::remove_absolute(path);
+			err = (DirAccess::rename_absolute(tmp_path, path) == OK) ? OK : ERR_CANT_CREATE;
+		}
+	}
+	if (err != OK && FileAccess::file_exists(tmp_path)) {
+		DirAccess::remove_absolute(tmp_path);
+	}
+
 	if (err != OK) {
 		UtilityFunctions::push_error("Inventory System: failed to save edited resource '" + path + "' (error " + itos(err) + ").");
+		// Retry through the debounce timer a few times (e.g. the file may be
+		// busy with an in-flight scan), then give up and keep the error visible.
+		resource_save_retries++;
+		if (resource_save_retries <= RESOURCE_SAVE_MAX_RETRIES && resource_edit_save_timer) {
+			resource_edit_save_timer->start();
+		}
+		return;
 	}
+	resource_save_retries = 0;
 }
 
 #endif // TOOLS_ENABLED

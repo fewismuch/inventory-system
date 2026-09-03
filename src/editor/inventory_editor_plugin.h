@@ -80,6 +80,14 @@ private:
 	bool autosave_enabled;
 	Timer *autosave_timer;
 
+	// Serialized save coordination: only one save runs at a time, requests that
+	// arrive mid-save are re-queued instead of dropped, and failures are retried
+	// a bounded number of times through the debounce timer.
+	bool save_pending;
+	bool save_in_progress;
+	int save_failure_retries;
+	static constexpr int SAVE_MAX_RETRIES = 3;
+
 	// UI Components
 	VBoxContainer *main_vbox;
 	MarginContainer *margin_container;
@@ -131,6 +139,9 @@ private:
 	void _open_file(const String &p_path);
 	void _save_file();
 	void _save_file_as(const String &p_path);
+	Error _write_database_to_path(const String &p_path);
+	void _perform_save(const String &p_path);
+	void _flush_pending_save();
 	void _import_inv_file(const String &p_path);
 	void _on_data_changed();
 	void _on_autosave_timer_timeout();

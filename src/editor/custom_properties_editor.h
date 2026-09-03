@@ -70,6 +70,10 @@ private:
     // back (external resources) or persisted via the database autosave.
     Ref<Resource> edited_resource_for_save;
     Timer* resource_edit_save_timer;
+    // Consecutive failures when writing an external resource file; the write is
+    // retried a few times through the debounce timer before giving up.
+    int resource_save_retries;
+    static constexpr int RESOURCE_SAVE_MAX_RETRIES = 3;
     
     // State
     String selected_property_name;

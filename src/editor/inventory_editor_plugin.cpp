@@ -23,6 +23,7 @@
 #include "loots_editor.h"
 
 #include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_file_system.hpp>
 #include <godot_cpp/classes/editor_resource_preview.hpp>
@@ -89,6 +90,18 @@ void InventoryEditor::_notification(int p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			_apply_theme();
 		} break;
+		case NOTIFICATION_VISIBILITY_CHANGED: {
+			// Leaving the main screen is a natural point to persist any edits
+			// still sitting inside the debounce window.
+			if (!is_visible()) {
+				_flush_pending_save();
+			}
+		} break;
+		case NOTIFICATION_EXIT_TREE: {
+			// The editor (or this screen) is going away; flush pending edits so
+			// the last debounce window is not lost.
+			_flush_pending_save();
+		} break;
 	}
 }
 
@@ -98,6 +111,9 @@ InventoryEditor::InventoryEditor() {
 	// editor restarts (defaults to enabled for fresh installs).
 	autosave_enabled = InventorySettings::get_user_value("autosave_enabled", true);
 	autosave_timer = nullptr;
+	save_pending = false;
+	save_in_progress = false;
+	save_failure_retries = 0;
 	
 	// Initialize tab button pointers
 	item_definitions_tab_button = nullptr;
@@ -119,6 +135,9 @@ void InventoryEditor::set_editor_plugin(EditorPlugin *p_plugin) {
 }
 
 void InventoryEditor::edit_database(const Ref<InventoryDatabase> &p_database, const String &p_path) {
+	// Flush edits pending for the previously open database before switching.
+	_flush_pending_save();
+
 	database = p_database;
 	database_path = p_path;
 	// When the database is opened via _edit() (e.g. double-clicked in the
@@ -623,6 +642,9 @@ void InventoryEditor::_load_database(const Ref<InventoryDatabase> &p_database) {
 }
 
 void InventoryEditor::_new_file(const String &p_path) {
+	// Persist any pending edits of the previously open database first.
+	_flush_pending_save();
+
 	Ref<InventoryDatabase> new_database;
 	new_database.instantiate();
 	database = new_database;
@@ -632,6 +654,9 @@ void InventoryEditor::_new_file(const String &p_path) {
 }
 
 void InventoryEditor::_open_file(const String &p_path) {
+	// Persist any pending edits of the previously open database first.
+	_flush_pending_save();
+
 	Ref<Resource> res = ResourceLoader::get_singleton()->load(p_path);
 	Ref<InventoryDatabase> db = res;
 	if (db.is_null()) {
@@ -652,14 +677,8 @@ void InventoryEditor::_save_file() {
 	if (database.is_null() || database_path.is_empty()) {
 		return;
 	}
-
-	Error err = ResourceSaver::get_singleton()->save(database, database_path);
-	if (err != OK) {
-		// Saving can fail when the file is busy (e.g. an in-flight filesystem
-		// scan/reimport) or the resource is in a bad state. Surface it instead
-		// of failing silently.
-		UtilityFunctions::push_error("Failed to save inventory database to: " + database_path);
-	}
+	save_pending = true;
+	_flush_pending_save();
 }
 
 void InventoryEditor::_save_file_as(const String &p_path) {
@@ -668,11 +687,80 @@ void InventoryEditor::_save_file_as(const String &p_path) {
 	}
 
 	database_path = p_path;
-	Error err = ResourceSaver::get_singleton()->save(database, database_path);
-	if (err != OK) {
-		UtilityFunctions::push_error("Failed to save inventory database to: " + database_path);
-	}
 	title_label->set_text(p_path);
+	save_pending = true;
+	_perform_save(p_path);
+}
+
+Error InventoryEditor::_write_database_to_path(const String &p_path) {
+	// Write to a hidden sibling file first and then rename it over the target.
+	// The leading '.' keeps the temp file out of the editor's file system, and
+	// keeping the ".tres" extension ensures the text resource saver is used.
+	// This guarantees the real file is only ever replaced by a complete write,
+	// so an in-flight editor scan/import can never observe a half-written .tres.
+	String ext = p_path.get_extension();
+	String tmp_path = p_path.get_base_dir() + "/." + p_path.get_file() + ".tmp." + (ext.is_empty() ? String("tres") : ext);
+	Error err = ResourceSaver::get_singleton()->save(database, tmp_path);
+	if (err == OK) {
+		// POSIX rename replaces an existing target; other platforms may need a
+		// manual removal first.
+		if (DirAccess::rename_absolute(tmp_path, p_path) != OK) {
+			DirAccess::remove_absolute(p_path);
+			err = (DirAccess::rename_absolute(tmp_path, p_path) == OK) ? OK : ERR_CANT_CREATE;
+		}
+	}
+	if (err != OK && FileAccess::file_exists(tmp_path)) {
+		DirAccess::remove_absolute(tmp_path);
+	}
+	return err;
+}
+
+void InventoryEditor::_perform_save(const String &p_path) {
+	if (database.is_null() || p_path.is_empty()) {
+		return;
+	}
+
+	// Never run two saves at once; if a save is already running, leave the
+	// pending flag set so a follow-up save happens right after it finishes.
+	if (save_in_progress) {
+		save_pending = true;
+		return;
+	}
+
+	save_in_progress = true;
+	Error err = _write_database_to_path(p_path);
+	save_in_progress = false;
+
+	if (err == OK) {
+		save_failure_retries = 0;
+		save_pending = false;
+		// Changes may have arrived while the file was being written; debounce a
+		// follow-up write instead of dropping them.
+		if (save_pending && autosave_timer) {
+			autosave_timer->start();
+		}
+		return;
+	}
+
+	// Saving can fail when the file is busy (e.g. an in-flight filesystem
+	// scan/reimport) or the resource is in a bad state. Surface it instead of
+	// failing silently, and retry a bounded number of times.
+	save_pending = true;
+	UtilityFunctions::push_error("Failed to save inventory database to: " + p_path);
+	save_failure_retries++;
+	if (save_failure_retries <= SAVE_MAX_RETRIES && autosave_timer) {
+		autosave_timer->start();
+	}
+}
+
+void InventoryEditor::_flush_pending_save() {
+	if (autosave_timer) {
+		autosave_timer->stop();
+	}
+	if (!save_pending) {
+		return;
+	}
+	_perform_save(database_path);
 }
 
 void InventoryEditor::_import_inv_file(const String &p_path) {
@@ -1072,18 +1160,20 @@ void InventoryEditor::_on_loots_tab_pressed() {
 void InventoryEditor::_on_data_changed() {
 	// Debounce auto-save: restart the timer so a burst of edits (e.g. typing)
 	// only triggers a single save once the user stops editing, instead of
-	// saving + scanning on every keystroke.
-	if (autosave_enabled && !database.is_null() && !database_path.is_empty()) {
-		if (autosave_timer) {
-			autosave_timer->start();
-		} else {
-			_save_file();
-		}
+	// saving on every keystroke.
+	if (!autosave_enabled || database.is_null() || database_path.is_empty()) {
+		return;
+	}
+	save_pending = true;
+	if (autosave_timer) {
+		autosave_timer->start();
+	} else {
+		_perform_save(database_path);
 	}
 }
 
 void InventoryEditor::_on_autosave_timer_timeout() {
-	_save_file();
+	_flush_pending_save();
 }
 
 // InventoryEditorPlugin
