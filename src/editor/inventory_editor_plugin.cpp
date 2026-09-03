@@ -94,7 +94,9 @@ void InventoryEditor::_notification(int p_what) {
 
 InventoryEditor::InventoryEditor() {
 	editor_plugin = nullptr;
-	autosave_enabled = true; // Autosave is enabled by default
+	// Restore the persisted autosave preference so the user's choice survives
+	// editor restarts (defaults to enabled for fresh installs).
+	autosave_enabled = InventorySettings::get_user_value("autosave_enabled", true);
 	autosave_timer = nullptr;
 	
 	// Initialize tab button pointers
@@ -739,6 +741,8 @@ void InventoryEditor::_on_database_save_menu_id_pressed(int p_id) {
 				if (menu->get_item_metadata(i) == "autosave") {
 					autosave_enabled = !menu->is_item_checked(i);
 					menu->set_item_checked(i, autosave_enabled);
+					// Persist the preference so it survives editor restarts.
+					InventorySettings::set_user_value("autosave_enabled", autosave_enabled);
 					break;
 				}
 			}

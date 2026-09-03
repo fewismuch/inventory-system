@@ -579,12 +579,14 @@ void CustomPropertiesEditor::_update_property_details() {
 			if (value.get_type() == Variant::STRING) {
 				// Load resource from path
 				String path = value;
+				UtilityFunctions::print("[CPROBE] detail obj val=STRING path=", path);
 				if (!path.is_empty() && path != "res://") {
 					resource = ResourceLoader::get_singleton()->load(path);
 				}
 			} else {
 				// Direct resource object (for backward compatibility)
 				resource = value;
+				UtilityFunctions::print("[CPROBE] detail obj val=OBJECT class=", resource.is_valid() ? resource->get_class() : String("<null>"), " path=", resource.is_valid() ? resource->get_path() : String("<null>"), " inst=", resource.is_valid() ? String::num_int64(resource->get_instance_id()) : String("-1"));
 			}
 			resource_value_picker->set_edited_resource(resource);
 
@@ -799,6 +801,7 @@ void CustomPropertiesEditor::_on_property_type_item_selected(int index) {
 
 	int type = property_type_option->get_item_id(index);
 	Dictionary properties = get_properties_from_resource();
+	UtilityFunctions::print("[CPROBE] type item selected prop=", selected_property_name, " newType=", type, " curType=", properties[selected_property_name].get_type());
 
 	// Get current value before conversion for intelligent conversion
 	Variant current_value = properties[selected_property_name];
@@ -939,6 +942,8 @@ void CustomPropertiesEditor::_on_resource_value_changed(const Ref<Resource> &res
 	}
 
 	Dictionary properties = get_properties_from_resource();
+	String dbg_path = resource.is_valid() ? resource->get_path() : String("<null>");
+	UtilityFunctions::print("[CPROBE] resource_changed prop=", selected_property_name, " valid=", resource.is_valid(), " class=", resource.is_valid() ? resource->get_class() : String("-"), " path=", dbg_path, " inst=", resource.is_valid() ? String::num_int64(resource->get_instance_id()) : String("-1"));
 	// External resources are stored as path strings. A newly created resource
 	// has no file path yet, so keep the object itself: it is then embedded as a
 	// sub-resource of the database on save and survives reloads.
@@ -987,6 +992,7 @@ void CustomPropertiesEditor::_on_resource_value_selected(const Ref<Resource>& re
 	// Open the resource in the editor's main inspector, where inherited
 	// classes and categories (e.g. @export_category) are shown as sections.
 	// A standalone EditorInspector in the plugin cannot display them.
+	UtilityFunctions::print("[CPROBE] resource_selected valid=", resource.is_valid(), " class=", resource.is_valid() ? resource->get_class() : String("-"), " path=", resource.is_valid() ? resource->get_path() : String("<null>"), " inst=", resource.is_valid() ? String::num_int64(resource->get_instance_id()) : String("-1"), " inspect=", inspect);
 	if (resource.is_valid()) {
 		EditorInterface::get_singleton()->edit_resource(resource);
 	}
@@ -996,6 +1002,8 @@ void CustomPropertiesEditor::_set_edited_resource_for_save(const Ref<Resource>& 
 	if (edited_resource_for_save == p_resource) {
 		return;
 	}
+
+	UtilityFunctions::print("[CPROBE] track-resource switch old=", edited_resource_for_save.is_valid() ? edited_resource_for_save->get_class() : String("<null>"), "/", edited_resource_for_save.is_valid() ? String::num_int64(edited_resource_for_save->get_instance_id()) : String("-1"), " new=", p_resource.is_valid() ? p_resource->get_class() : String("<null>"), "/", p_resource.is_valid() ? String::num_int64(p_resource->get_instance_id()) : String("-1"));
 
 	// Persist any pending edit of the previous resource before switching.
 	if (resource_edit_save_timer && !resource_edit_save_timer->is_stopped()) {
@@ -1019,9 +1027,21 @@ void CustomPropertiesEditor::_on_edited_resource_changed() {
 		return;
 	}
 	String path = edited_resource_for_save->get_path();
+	UtilityFunctions::print("[CPROBE] edited-resource changed class=", edited_resource_for_save->get_class(), " path=", path, " inst=", String::num_int64(edited_resource_for_save->get_instance_id()));
 	if (path.is_empty() || path == "res://" || path.contains("::")) {
 		// Newly created or database-embedded resource: persist it through the
 		// database autosave, since the resource is stored inside the database.
+		// Re-store the live object in the item so the dictionary always holds
+		// the exact instance that is being edited, even if a reload/refresh
+		// swapped it for a stale copy in the meantime.
+		if (!selected_property_name.is_empty() && current_resource.is_valid()) {
+			Dictionary properties = get_properties_from_resource();
+			if (!properties.has(selected_property_name) || properties[selected_property_name] != edited_resource_for_save) {
+				properties[selected_property_name] = edited_resource_for_save;
+				set_properties_to_resource(properties);
+				UtilityFunctions::print("[CPROBE] re-stored edited object into property '", selected_property_name, "'");
+			}
+		}
 		emit_signal("changed");
 	} else {
 		// External resource file: debounce a direct save so a burst of edits
